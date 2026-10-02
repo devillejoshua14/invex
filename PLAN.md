@@ -69,11 +69,28 @@ Derived via SQL views:
    - Delivery due today/tomorrow
    - Weekly count reminder
    - Anomaly flagged (after count submit)
-7. **Anomaly detection** (runs on count submit):
-   - Usage z-score vs trailing 6–8 counts (e.g. |z| > 2)
-   - Negative usage (count went up without a receipt → miscount or unlogged delivery)
-   - Vendor price change > X% vs last receipt
-   - Claude writes a 1–2 sentence explanation per anomaly
+7. **Anomaly detection**, in two modes:
+   - Rule of thumb: check live only what is certain at the moment of the write. Live checks see
+     only logged events (data-entry and vendor problems); count-time checks see real usage
+     (over-pouring, theft, unrecorded waste)
+   - **Live** (on every ledger write, via an `AFTER INSERT` trigger on `inventory_transactions`):
+     - Vendor price change > X% vs last receipt (checked when a delivery is received)
+     - Negative on-hand: flagged **low** severity (often temporary, e.g. delivery on the dock but
+       not logged yet). Escalated to high only if still negative at the next count
+     - Oversized single entry: waste/spoilage/comp/adjustment > X% of on-hand or > N× that item's typical entry
+     - Burst: unusually many manual entries for one item in a short window (e.g. 3+ in an hour)
+   - **On count submit** (needs a full count interval to compare):
+     - Usage z-score vs trailing 6–8 counts (e.g. |z| > 2)
+     - Negative usage (count went up without a receipt)
+     - Escalate open negative on-hand flags that the count didn't resolve
+   - Write path stays fast: the trigger only does indexed lookups for that one item and inserts
+     an `anomalies` row in the same transaction (CP: the flag can't be lost). The slow parts,
+     Claude's 1–2 sentence explanation and the SMS, run afterwards (right after the server action
+     returns, with a cron sweep picking up any anomaly still missing an explanation)
+   - **Fail-safe trigger:** checks run inside an exception block, so a bug in detection logs
+     an error and lets the write through. It never blocks a manager from recording stock
+   - Noise control: **high** severity texts immediately; medium/low show in-app and in the
+     count-submit summary. One open anomaly per item + type (dedupe), thresholds in a settings table
 8. **AI assistant** (chat panel), tools:
    - `getStock(item | category)`, `getUsage(item, range)`, `listOrders(status, range)`,
      `getAnomalies(range)`, `getVendor(name)`
